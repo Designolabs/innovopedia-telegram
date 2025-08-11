@@ -1,67 +1,82 @@
 require('dotenv').config();
-const { Telegraf, Markup } = require('telegraf');
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const logger = require('./utils/logger');
+const botService = require('./services/botService');
+const config = require('./config');
 
-// Import routes
-const postsRoutes = require('./backend/routes/posts');
-const usersRoutes = require('./backend/routes/users');
-
-// Check for required environment variables
-if (!process.env.BOT_TOKEN) {
-  console.error('Error: BOT_TOKEN is not set in .env file');
-  process.exit(1);
-}
-
-if (!process.env.WEB_APP_URL) {
-  console.error('Error: WEB_APP_URL is not set in .env file');
-  process.exit(1);
-}
-
-// Initialize bot
-const bot = new Telegraf(process.env.BOT_TOKEN);
-
-// Set up Express server
+// Initialize Express server
 const app = express();
-const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'frontend')));
 
-// API Routes
-app.use('/posts', postsRoutes);
-app.use('/preferences', usersRoutes);
-
-// Bot commands
-bot.command('start', (ctx) => {
-  ctx.reply(
-    'Welcome to Innovopedia! Explore innovative ideas and technologies.',
-    Markup.keyboard([
-      Markup.button.webApp('📖 Open App', process.env.WEB_APP_URL)
-    ]).resize()
-  );
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-bot.command('saved', (ctx) => {
-  ctx.reply('Your saved articles (coming soon)');
+// Start server
+const server = app.listen(config.server.port, () => {
+  logger.info(`Server running on port ${config.server.port}`);
+  
+  try {
+    // Initialize and start the bot service
+    botService.initialize();
+    logger.info('Bot service initialized');
+    
+    if (config.telegram.webAppUrl) {
+      logger.info(`Web App URL: ${config.telegram.webAppUrl}`);
+    }
+  } catch (error) {
+    logger.error('Failed to initialize bot service:', error);
+    process.exit(1);
+  }
 });
 
-// Start Express server
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Web App URL: ${process.env.WEB_APP_URL}`);
+/**
+ * Graceful shutdown handler
+ */
+const shutdown = async (signal) => {
+  logger.info(`Received ${signal}. Shutting down gracefully...`);
+  
+  try {
+    // Stop the bot service
+    await botService.shutdown();
+    
+    // Close the HTTP server
+    server.close(() => {
+      logger.info('HTTP server closed');
+      process.exit(0);
+    });
+    
+    // Force shutdown after timeout
+    setTimeout(() => {
+      logger.error('Could not close connections in time, forcefully shutting down');
+      process.exit(1);
+    }, 5000);
+  } catch (error) {
+    logger.error('Error during shutdown:', error);
+    process.exit(1);
+  }
+};
+
+// Handle shutdown signals
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
-// Start bot
-bot.launch().then(() => {
-  console.log('Bot started successfully!');
-}).catch((err) => {
-  console.error('Failed to start bot:', err);
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught Exception:', error);
 });
 
-// Enable graceful stop
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+// Log startup completion
+logger.info('Application startup completed');
