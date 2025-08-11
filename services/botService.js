@@ -689,27 +689,34 @@ class BotService {
       const categories = await wordpress.getCategories();
       const prefs = preferences.getPreferences(String(ctx.chat.id));
       
-      // Build the message parts
-      const messageParts = [];
-      messageParts.push('📚 *Available Categories*\n\n');
+      // Build the message parts with HTML formatting
+      let message = '<b>📚 Available Categories</b>\n\n';
       
       categories.forEach(cat => {
         const isSelected = prefs.categories.includes(cat.id);
-        const escapedName = escapeMarkdown(cat.name);
-        // Escape the entire line including the count
-        const line = `${isSelected ? '✅' : '◻️'} *${escapedName}* \(${cat.count} posts\)`;
-        messageParts.push(line);
+        message += `${isSelected ? '✅' : '◻️'} <b>${this.escapeHtml(cat.name)}</b> (${cat.count} posts)\n`;
       });
       
-      messageParts.push('\nTo change categories, use /set_categories');
+      message += '\nTo change categories, use /set_categories';
       
-      // Join all parts with newlines and send
-      const message = messageParts.join('\n');
-      await ctx.replyWithMarkdownV2(message);
+      // Send with HTML parsing
+      await ctx.reply(message, { parse_mode: 'HTML' });
     } catch (error) {
       logger.error('Error fetching categories:', error);
       await ctx.reply('❌ Failed to fetch categories. Please try again later.');
     }
+  }
+
+  /**
+   * Helper to escape HTML special characters
+   */
+  escapeHtml(unsafe) {
+    return String(unsafe)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
   }
 
   /**
