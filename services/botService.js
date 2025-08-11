@@ -3,14 +3,13 @@ const config = require('../config');
 const preferences = require('./preferences');
 const wordpress = require('./wordpress');
 const logger = require('../utils/logger');
+const { Telegraf: TelegrafSession } = require('telegraf-session-local');
 
 // Helper function to escape markdown special characters
 function escapeMarkdown(text) {
   if (!text) return '';
   return text.replace(/[_*[\]()~`>#+\-={}|.!\\]/g, '\\$&');
 }
-
-const { session } = require('telegraf');
 
 class BotService {
   constructor() {
@@ -19,12 +18,37 @@ class BotService {
     });
     
     // Initialize session middleware
-    this.bot.use(session({
-      defaultSession: () => ({
-        selectedCategories: [],
-        selectedTags: []
-      })
-    }));
+    const session = new TelegrafSession({
+      // Database name/path to load on start
+      database: 'sessions.json',
+      // Type of storage to use
+      storage: TelegrafSession.storageFileAsync,
+      // Format of storage/database (default: JSON.stringify / JSON.parse)
+      format: {
+        serialize: (obj) => JSON.stringify(obj, null, 2),
+        deserialize: (str) => JSON.parse(str),
+      },
+      // Update session on every message
+      getSessionKey: (ctx) => {
+        if (ctx.from && ctx.chat) {
+          return `${ctx.from.id}:${ctx.chat.id}`;
+        }
+        return null;
+      },
+    });
+    
+    this.bot.use(session.middleware());
+    
+    // Initialize default session values
+    this.bot.use((ctx, next) => {
+      if (!ctx.session) {
+        ctx.session = {
+          selectedCategories: [],
+          selectedTags: []
+        };
+      }
+      return next();
+    });
     
     this.setupErrorHandling();
   }
