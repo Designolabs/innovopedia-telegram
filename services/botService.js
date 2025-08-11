@@ -75,16 +75,38 @@ class BotService {
     this.setupActionHandlers();
     this.setupErrorHandling();
     
-    // Log bot start
-    this.bot.launch().then(() => {
-      logger.info('Bot started successfully');
-      
-      // Start auto-posting for active chats
-      this.startAutoPostingForActiveChats();
-    }).catch(error => {
-      logger.error('Failed to start bot:', error);
-      process.exit(1);
-    });
+    // Log bot start with explicit polling
+    logger.info('Starting bot with polling...');
+    
+    // Configure bot launch options
+    const launchOptions = {
+      dropPendingUpdates: true, // Skip old updates
+      allowedUpdates: ['message', 'callback_query'] // Only listen to these update types
+    };
+    
+    // Start the bot with explicit polling
+    this.bot.launch(launchOptions)
+      .then(() => {
+        logger.info('Bot started successfully with the following configuration:');
+        logger.info(`- Bot Username: @${this.bot.botInfo?.username || 'unknown'}`);
+        logger.info(`- Webhook: ${this.bot.telegram.webhookReply ? 'Enabled' : 'Disabled'}`);
+        logger.info(`- Polling: ${!this.bot.telegram.webhookReply ? 'Enabled' : 'Disabled'}`);
+        
+        // Start auto-posting for active chats
+        this.startAutoPostingForActiveChats();
+        
+        // Log success
+        logger.info('Bot is now running and ready to receive commands');
+      })
+      .catch(error => {
+        logger.error('Failed to start bot:', error);
+        logger.error('Error details:', {
+          message: error.message,
+          stack: error.stack,
+          code: error.code
+        });
+        process.exit(1);
+      });
   }
 
   /**
@@ -481,48 +503,62 @@ class BotService {
   /**
    * Handle the /start command
    */
-
-/**
- * Handle the /start command
- */
-async handleStart(ctx) {
-  try {
-    // Apply rate limiting
-    await rateLimiter.consume(`user_${ctx.from.id}`);
-
-    // Track user engagement
-    await metricsService.trackNewUser(String(ctx.from.id));
-    await metricsService.trackCommand(String(ctx.from.id), 'start');
-
-    const isAdminUser = this.isAdmin(ctx);
-    const welcomeMessage = `👋 Welcome to the ${config.bot.name}!\n\nI can help you stay updated with the latest content from ${config.wordpress.siteName}.\n\nUse /help to see available commands.`;
-
-    const adminMessage = isAdminUser ? `
-
-📋 *Admin Commands*:
-/start_autopost - Start auto-posting new content
-/stop_autopost - Stop auto-posting
-/set_categories - Set categories to filter by
-/set_tags - Set tags to filter by
-/post_latest - Manually post the latest article
-/post_specific - Post a specific article by ID
-/schedule_post - Schedule a post for later
-/scheduled_posts - View scheduled posts
-/search - Search for posts
-/stats - View bot statistics` : '';
+  async handleStart(ctx) {
+    try {
+      logger.info(`/start command received from user ${ctx.from.id} (${ctx.from.username || 'no username'})`);
       
-      await ctx.replyWithMarkdown(welcomeMessage + adminMessage, {
-        reply_markup: {
-          remove_keyboard: true
-        }
+      // Rate limiting
+      await rateLimiter.consume(`user_${ctx.from.id}`)
+        .then(async () => {
+          logger.debug(`Rate limit check passed for user ${ctx.from.id}`);
+          
+          // Track new user if first time
+          await metricsService.trackNewUser(String(ctx.from.id));
+          await metricsService.trackCommand(String(ctx.from.id), 'start');
+          
+          const isAdminUser = this.isAdmin(ctx);
+          logger.debug(`User ${ctx.from.id} is ${isAdminUser ? 'an admin' : 'a regular user'}`);
+          
+          // Welcome message with basic instructions
+          const welcomeMessage = `👋 Welcome to the ${config.bot.name}!\n\n` +
+            `I can help you stay updated with the latest content from ${config.wordpress.siteName}.\n\n` +
+            `Use /help to see available commands.`;
+            
+          // Add admin commands if user is admin
+          const adminMessage = isAdminUser ? 
+            `\n\n📋 *Admin Commands*:\n` +
+            `/start_autopost - Start auto-posting new content\n` +
+            `/stop_autopost - Stop auto-posting\n` +
+            `/stats - View bot statistics\n` +
+            `/schedule_post - Schedule a post\n` +
+            `/scheduled_posts - List scheduled posts` : '';
+            
+          logger.debug(`Sending welcome message to user ${ctx.from.id}`);
+          await ctx.replyWithMarkdown(welcomeMessage + adminMessage, {
+            reply_markup: {
+              remove_keyboard: true
+            }
+          });
+          logger.debug(`Welcome message sent to user ${ctx.from.id}`);
+        })
+        .catch(async (error) => {
+          // Rate limit exceeded
+          logger.warn(`Rate limit exceeded for user ${ctx.from.id}: ${error.message}`);
+          await ctx.reply('⚠️ Too many requests. Please try again later.');
+        });
+    } catch (error) {
+      logger.error(`Error in handleStart for user ${ctx.from.id}:`, {
+        error: error.message,
+        stack: error.stack,
+        updateType: ctx.updateType,
+        updateId: ctx.update.update_id
       });
-    } catch (err) {
-      if (err instanceof Error) {
-        logger.error('Error in handleStart:', err);
-      }
-      // Rate limit exceeded
-      if (err.remainingPoints === 0) {
-        await ctx.reply('⚠️ Too many requests. Please try again later.');
+      
+      // Try to send an error message to the user
+      try {
+        await ctx.reply('❌ An error occurred while processing your request. Please try again later.');
+      } catch (e) {
+        logger.error('Failed to send error message to user:', e);
       }
     }
   }
