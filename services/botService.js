@@ -4,6 +4,16 @@ const preferences = require('./preferences');
 const wordpress = require('./wordpress');
 const logger = require('../utils/logger');
 const { Telegraf: TelegrafSession } = require('telegraf-session-local');
+const SchedulerService = require('./schedulerService');
+const metricsService = require('./metricsService');
+const moment = require('moment-timezone');
+const { RateLimiterMemory } = require('rate-limiter-flexible');
+
+// Rate limiting: 5 messages per second
+const rateLimiter = new RateLimiterMemory({
+  points: 5,
+  duration: 1,
+});
 
 // Helper function to escape markdown special characters
 function escapeMarkdown(text) {
@@ -13,9 +23,13 @@ function escapeMarkdown(text) {
 
 class BotService {
   constructor() {
+    // Initialize bot first
     this.bot = new Telegraf(config.telegram.token, {
       telegram: { webhookReply: false }
     });
+    
+    // Now initialize scheduler with the bot instance
+    this.scheduler = new SchedulerService(this.bot);
     
     // Initialize session middleware
     const session = new TelegrafSession({
@@ -77,21 +91,40 @@ class BotService {
    * Setup bot commands
    */
   setupCommands() {
-    // Start command
+    // Basic commands
     this.bot.command('start', (ctx) => this.handleStart(ctx));
+    this.bot.command('help', (ctx) => this.handleHelp(ctx));
     
-    // Admin commands
-    this.bot.command('start_autopost', (ctx) => this.handleStartAutoPost(ctx));
-    this.bot.command('stop_autopost', (ctx) => this.handleStopAutoPost(ctx));
+    // Category commands
+    this.bot.command('categories', (ctx) => this.handleListCategories(ctx));
     this.bot.command('set_categories', (ctx) => this.handleSetCategories(ctx));
+    
+    // Tag commands
+    this.bot.command('tags', (ctx) => this.handleListTags(ctx));
     this.bot.command('set_tags', (ctx) => this.handleSetTags(ctx));
+    
+    // Post commands
     this.bot.command('post_latest', (ctx) => this.handlePostLatest(ctx));
     this.bot.command('post_specific', (ctx) => this.handlePostSpecific(ctx));
+    this.bot.command('schedule_post', (ctx) => this.handleSchedulePost(ctx));
+    this.bot.command('scheduled_posts', (ctx) => this.handleListScheduledPosts(ctx));
+    
+    // Search command
+    this.bot.command('search', (ctx) => this.handleSearch(ctx));
+    
+    // Stats command
+    this.bot.command('stats', (ctx) => this.handleStats(ctx));
+    
+    // Admin commands
+    this.bot.command('admin', (ctx) => this.handleAdminCommand(ctx));
     
     // Info commands
     this.bot.command('preferences', (ctx) => this.handlePreferences(ctx));
-    this.bot.command('categories', (ctx) => this.handleListCategories(ctx));
-    this.bot.command('tags', (ctx) => this.handleListTags(ctx));
+    
+    // Auto-posting commands
+    this.bot.command('start_autopost', (ctx) => this.handleStartAutoPost(ctx));
+    this.bot.command('stop_autopost', (ctx) => this.handleStopAutoPost(ctx));
+    
     this.bot.help((ctx) => this.handleHelp(ctx));
     
     // Handle any other commands
@@ -448,58 +481,331 @@ class BotService {
   /**
    * Handle the /start command
    */
-  async handleStart(ctx) {
-    const chatId = String(ctx.chat.id);
-    const isAdmin = config.telegram.adminUsers.includes(Number(chatId));
-    
-    const welcomeMessage = `👋 *Welcome to Innovopedia Bot!*\n\n` +
-      `I can automatically share the latest posts from Innovopedia to this chat.\n\n` +
-      `*Available Commands:*\n` +
-      `/help - Show this help message\n` +
-      `/preferences - View current preferences\n` +
-      `/categories - List available categories\n` +
-      `/tags - List available tags\n`;
-    
-    const adminMessage = isAdmin ? 
-      `\n*Admin Commands:*\n` +
-      `/start_autopost - Start automatic posting\n` +
-      `/stop_autopost - Stop automatic posting\n` +
-      `/set_categories - Set categories to filter by\n` +
-      `/set_tags - Set tags to filter by\n` +
-      `/post_latest - Manually post the latest article\n` +
-      `/post_specific - Post a specific article by ID\n` : '';
-    
-    await ctx.replyWithMarkdown(welcomeMessage + adminMessage, {
-      reply_markup: {
-        inline_keyboard: [
-          [
-            Markup.button.callback('⚙️ Preferences', 'show_prefs'),
-            Markup.button.url('🌐 Visit Innovopedia', 'https://innovopedia.com')
-          ]
-        ]
+
+/**
+ * Handle the /start command
+ */
+async handleStart(ctx) {
+  try {
+    // Apply rate limiting
+    await rateLimiter.consume(`user_${ctx.from.id}`);
+
+    // Track user engagement
+    await metricsService.trackNewUser(String(ctx.from.id));
+    await metricsService.trackCommand(String(ctx.from.id), 'start');
+
+    const isAdminUser = this.isAdmin(ctx);
+    const welcomeMessage = `👋 Welcome to the ${config.bot.name}!\n\nI can help you stay updated with the latest content from ${config.wordpress.siteName}.\n\nUse /help to see available commands.`;
+
+    const adminMessage = isAdminUser ? `
+
+📋 *Admin Commands*:
+/start_autopost - Start auto-posting new content
+/stop_autopost - Stop auto-posting
+/set_categories - Set categories to filter by
+/set_tags - Set tags to filter by
+/post_latest - Manually post the latest article
+/post_specific - Post a specific article by ID
+/schedule_post - Schedule a post for later
+/scheduled_posts - View scheduled posts
+/search - Search for posts
+/stats - View bot statistics` : '';
+      
+      await ctx.replyWithMarkdown(welcomeMessage + adminMessage, {
+        reply_markup: {
+          remove_keyboard: true
+        }
+      });
+    } catch (err) {
+      if (err instanceof Error) {
+        logger.error('Error in handleStart:', err);
       }
-    });
+      // Rate limit exceeded
+      if (err.remainingPoints === 0) {
+        await ctx.reply('⚠️ Too many requests. Please try again later.');
+      }
+    }
   }
 
   /**
    * Handle the /help command
    */
   async handleHelp(ctx) {
-    await this.handleStart(ctx); // Reuse start handler for help
+    try {
+      await rateLimiter.consume(`user_${ctx.from.id}`);
+      await metricsService.trackCommand(String(ctx.from.id), 'help');
+      await this.handleStart(ctx); // Reuse start handler for help
+    } catch (err) {
+      if (err.remainingPoints === 0) {
+        await ctx.reply('⚠️ Too many requests. Please try again later.');
+      } else {
+        logger.error('Error in handleHelp:', err);
+        await ctx.reply('❌ An error occurred while processing your request.');
+      }
+    }
+  }
+  
+  /**
+   * Handle the /stats command
+   * Shows bot usage statistics
+   */
+  async handleStats(ctx) {
+    try {
+      await rateLimiter.consume(`user_${ctx.from.id}`);
+      
+      if (!this.isAdmin(ctx)) {
+        return ctx.reply('❌ You do not have permission to view statistics.');
+      }
+      
+      // Track command usage
+      await metricsService.trackCommand(String(ctx.from.id), 'stats');
+      
+      // Get metrics summary
+      const stats = metricsService.getSummary();
+      const lastUpdated = moment(stats.lastUpdated).fromNow();
+      
+      // Format top commands
+      let topCommands = 'No command data available';
+      if (stats.mostUsedCommands && stats.mostUsedCommands.length > 0) {
+        topCommands = stats.mostUsedCommands
+          .map(([cmd, count]) => `• /${cmd}: ${count} uses`)
+          .join('\n');
+      }
+      
+      // Format top users
+      let topUsers = 'No user data available';
+      if (stats.mostActiveUsers && stats.mostActiveUsers.length > 0) {
+        topUsers = stats.mostActiveUsers
+          .map((user, index) => {
+            const lastSeen = moment(user.lastSeen).fromNow();
+            return `${index + 1}. User ${user.userId}: ${user.commandsUsed} commands (last seen ${lastSeen})`;
+          })
+          .join('\n');
+      }
+      
+      // Create the stats message
+      const message = `📊 *Bot Statistics*\n\n` +
+        `👥 *Users*\n` +
+        `• Total: ${stats.totalUsers}\n` +
+        `• Active (30d): ${stats.activeUsers}\n\n` +
+        `📝 *Content*\n` +
+        `• Posts sent: ${stats.totalPostsSent}\n` +
+        `• Searches performed: ${stats.totalSearches}\n` +
+        `• Posts scheduled: ${stats.totalScheduledPosts}\n\n` +
+        `🔝 *Top Commands*\n${topCommands}\n\n` +
+        `🏆 *Top Users*\n${topUsers}\n\n` +
+        `_Last updated: ${lastUpdated}_`;
+      
+      await ctx.reply(message, { parse_mode: 'Markdown' });
+      
+    } catch (error) {
+      logger.error('Error in handleStats:', error);
+      await ctx.reply('❌ An error occurred while fetching statistics. Please try again later.');
+    }
   }
 
   /**
    * Handle the /start_autopost command
    */
-  async handleStartAutoPost(ctx) {
-    const chatId = String(ctx.chat.id);
-    
-    if (!this.isAdmin(ctx)) {
-      return ctx.reply('❌ You do not have permission to use this command.');
-    }
-    
+  /**
+   * Handle the /schedule_post command
+   * Format: /schedule_post [post_id] [time]
+   * Example: /schedule_post 123 in 2 hours
+   * Example: /schedule_post 123 2023-12-31 18:30
+   */
+  async handleSchedulePost(ctx) {
     try {
-      await this.startAutoPosting(chatId);
+      await rateLimiter.consume(`user_${ctx.from.id}`);
+      
+      // Track schedule command
+      await metricsService.trackCommand(String(ctx.from.id), 'schedule_post');
+      
+      if (!this.isAdmin(ctx)) {
+        return ctx.reply('❌ You do not have permission to use this command.');
+      }
+      
+      const args = ctx.message.text.split(' ').slice(1);
+      if (args.length < 2) {
+        return ctx.reply(
+          '❌ Please provide a post ID and schedule time.\n' +
+          'Example: `/schedule_post 123 in 2 hours`\n' +
+          'Or: `/schedule_post 123 2023-12-31 18:30`',
+          { parse_mode: 'Markdown' }
+        );
+      }
+      
+      const postId = parseInt(args[0], 10);
+      if (isNaN(postId)) {
+        return ctx.reply('❌ Invalid post ID. Please provide a valid numeric ID.');
+      }
+      
+      const timeArg = args.slice(1).join(' ');
+      
+      // Get the post from WordPress
+      const post = await wordpress.getPost(postId);
+      if (!post) {
+        return ctx.reply('❌ Post not found. Please check the post ID and try again.');
+      }
+      
+      // Schedule the post
+      const result = await this.scheduler.schedulePost(
+        String(ctx.chat.id),
+        post,
+        timeArg
+      );
+      
+      if (result.success) {
+        const formattedTime = moment(result.scheduledTime).format('YYYY-MM-DD HH:mm:ss');
+        await ctx.reply(
+          `✅ Post scheduled successfully!\n` +
+          `📝 *${post.title?.rendered || 'Untitled Post'}*\n` +
+          `⏰ *When:* ${formattedTime}`,
+          { parse_mode: 'Markdown' }
+        );
+      } else {
+        await ctx.reply(`❌ Failed to schedule post: ${result.error || 'Unknown error'}`);
+      }
+      
+    } catch (error) {
+      logger.error('Error in handleSchedulePost:', error);
+      await ctx.reply('❌ An error occurred while scheduling the post. Please try again later.');
+    }
+  }
+  
+  /**
+   * Handle the /scheduled_posts command
+   * Lists all scheduled posts for the current chat
+   */
+  async handleListScheduledPosts(ctx) {
+    try {
+      await rateLimiter.consume(`user_${ctx.from.id}`);
+      
+      // Track command usage
+      await metricsService.trackCommand(String(ctx.from.id), 'scheduled_posts');
+      
+      if (!this.isAdmin(ctx)) {
+        return ctx.reply('❌ You do not have permission to use this command.');
+      }
+      
+      const scheduledPosts = this.scheduler.listScheduledPosts(String(ctx.chat.id));
+      
+      if (scheduledPosts.length === 0) {
+        return ctx.reply('📭 No scheduled posts found.');
+      }
+      
+      let message = '📅 *Scheduled Posts*\n\n';
+      
+      scheduledPosts.forEach((post, index) => {
+        const time = moment(post.scheduledTime).format('YYYY-MM-DD HH:mm');
+        message += `${index + 1}. *${post.postTitle}*\n`;
+        message += `   🕒 ${time} (${moment(post.scheduledTime).fromNow()})\n`;
+        message += `   ID: \`${post.jobId}\`\n\n`;
+      });
+      
+      await ctx.reply(message, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: '🔄 Refresh',
+                callback_data: 'refresh_scheduled_posts'
+              },
+              {
+                text: '❌ Clear All',
+                callback_data: 'clear_scheduled_posts'
+              }
+            ]
+          ]
+        }
+      });
+      
+    } catch (error) {
+      logger.error('Error in handleListScheduledPosts:', error);
+      await ctx.reply('❌ An error occurred while fetching scheduled posts.');
+    }
+  }
+  
+  /**
+   * Handle the /search command
+   * Format: /search [query]
+   * Example: /search blockchain technology
+   */
+  async handleSearch(ctx) {
+    try {
+      await rateLimiter.consume(`user_${ctx.from.id}`);
+      
+      // Track search command
+      await metricsService.trackCommand(String(ctx.from.id), 'search');
+      
+      const query = ctx.message.text.split(' ').slice(1).join(' ');
+      if (!query) {
+        return ctx.reply(
+          '🔍 Please provide a search query.\n' +
+          'Example: `/search blockchain technology`',
+          { parse_mode: 'Markdown' }
+        );
+      }
+      
+      // Show typing indicator
+      await ctx.telegram.sendChatAction(ctx.chat.id, 'typing');
+      
+      // Search for posts
+      const searchResults = await wordpress.searchPosts(query, { per_page: 5 });
+      
+      if (!searchResults || searchResults.length === 0) {
+        return ctx.reply('🔍 No posts found matching your search.');
+      }
+      
+      let message = `🔍 *Search Results for "${query}"*\n\n`;
+      
+      searchResults.forEach((post, index) => {
+        const title = post.title?.rendered || 'Untitled Post';
+        const excerpt = post.excerpt?.rendered 
+          ? post.excerpt.rendered.replace(/<[^>]*>?/gm, '').substring(0, 100) + '...'
+          : 'No description available';
+          
+        message += `*${index + 1}. ${title}*\n`;
+        message += `${excerpt}\n`;
+        message += `📅 ${moment(post.date).format('MMM D, YYYY')} | `;
+        message += `🔗 [Read More](${post.link})\n\n`;
+      });
+      
+      message += `_Showing ${searchResults.length} of ${searchResults.length} results_`;
+      
+      await ctx.reply(message, {
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true,
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: '📚 View All Results',
+                url: `${config.wordpress.url}/?s=${encodeURIComponent(query)}`
+              }
+            ]
+          ]
+        }
+      });
+      
+    } catch (error) {
+      logger.error('Error in handleSearch:', error);
+      await ctx.reply('❌ An error occurred while searching. Please try again later.');
+    }
+  }
+  
+  /**
+   * Handle the /start_autopost command
+   */
+  async handleStartAutoPost(ctx) {
+    try {
+      await rateLimiter.consume(`user_${ctx.from.id}`);
+      
+      if (!this.isAdmin(ctx)) {
+        return ctx.reply('❌ You do not have permission to use this command.');
+      }
+      
+      await this.startAutoPosting(String(ctx.chat.id));
       await ctx.reply('✅ Automatic posting has been started!');
     } catch (error) {
       logger.error('Error starting auto-post:', error);
@@ -561,68 +867,6 @@ class BotService {
   }
 
   /**
-   * Show a selection menu for categories or tags
-   */
-  async showSelectionMenu(ctx, type, items) {
-    try {
-      const chatId = String(ctx.chat?.id || ctx.from?.id);
-      const prefs = preferences.getPreferences(chatId);
-      
-      // Ensure session is properly initialized
-      if (!ctx.session) {
-        ctx.session = {};
-      }
-      
-      // Initialize selected items array if not exists
-      if (!ctx.session[`selected${this.capitalize(type)}`]) {
-        ctx.session[`selected${this.capitalize(type)}`] = [];
-      }
-      
-      // Update session with current preferences if needed
-      if (Array.isArray(prefs[type])) {
-        ctx.session[`selected${this.capitalize(type)}`] = [...prefs[type]];
-      }
-      
-      // Create keyboard with items
-      const keyboard = [];
-      const chunkSize = 2;
-      
-      // Add category/tag selection buttons
-      for (let i = 0; i < items.length; i += chunkSize) {
-        const row = items
-          .slice(i, i + chunkSize)
-          .map(item => {
-            const isSelected = ctx.session[`selected${this.capitalize(type)}`].includes(item.id);
-            const buttonText = `${isSelected ? '✅' : '◻️'} ${item.name} (${item.count})`;
-            return Markup.button.callback(buttonText, `toggle_${type}_${item.id}`);
-          });
-        keyboard.push(row);
-      }
-      
-      // Add action buttons
-      keyboard.push([
-        Markup.button.callback('💾 Save', `save_${type}`),
-        Markup.button.callback('❌ Cancel', `cancel_${type}`)
-      ]);
-      
-      // Send or update the message
-      const messageText = `Select ${type} to follow:\nClick the checkboxes to select/deselect.`;
-      
-      if (ctx.callbackQuery) {
-        // Edit existing message
-        await ctx.editMessageText(messageText, {
-          reply_markup: {
-            inline_keyboard: keyboard
-          },
-          parse_mode: 'HTML'
-        });
-      } else {
-        // Send new message
-        await ctx.reply(messageText, {
-          reply_markup: {
-            inline_keyboard: keyboard
-          },
-          parse_mode: 'HTML'
         });
       }
       
