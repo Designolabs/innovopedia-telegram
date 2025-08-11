@@ -107,30 +107,88 @@ class BotService {
   setupActionHandlers() {
     // Toggle category selection
     this.bot.action(/^toggle_category_(\d+)$/, async (ctx) => {
-      await this.handleToggleSelection(ctx, 'category');
+      try {
+        const categoryId = parseInt(ctx.match[1], 10);
+        const chatId = String(ctx.chat?.id || ctx.from?.id);
+        
+        if (!ctx.session) {
+          ctx.session = { selectedCategories: [] };
+        }
+        
+        // Toggle category selection
+        const index = ctx.session.selectedCategories.indexOf(categoryId);
+        if (index === -1) {
+          ctx.session.selectedCategories.push(categoryId);
+        } else {
+          ctx.session.selectedCategories.splice(index, 1);
+        }
+        
+        // Update the message with new selection
+        const categories = await wordpress.getCategories();
+        await this.showSelectionMenu(ctx, 'categories', categories);
+        
+        // Acknowledge the button press
+        await ctx.answerCbQuery();
+      } catch (error) {
+        logger.error('Error toggling category:', error);
+        await ctx.answerCbQuery('❌ Error updating selection');
+      }
     });
     
-    // Toggle tag selection
-    this.bot.action(/^toggle_tag_(\d+)$/, async (ctx) => {
-      await this.handleToggleSelection(ctx, 'tag');
-    });
-    
-    // Save categories/tags
+    // Save categories
     this.bot.action('save_categories', async (ctx) => {
-      await this.handleSaveSelection(ctx, 'categories');
+      try {
+        const chatId = String(ctx.chat?.id || ctx.from?.id);
+        
+        if (ctx.session?.selectedCategories) {
+          // Update preferences
+          preferences.updateCategories(chatId, ctx.session.selectedCategories);
+          
+          // Clean up session
+          delete ctx.session.selectedCategories;
+          
+          // Update the message
+          await ctx.editMessageText('✅ Categories updated successfully!');
+          await ctx.answerCbQuery('Categories saved');
+        } else {
+          await ctx.answerCbQuery('No changes to save');
+        }
+      } catch (error) {
+        logger.error('Error saving categories:', error);
+        await ctx.answerCbQuery('❌ Error saving categories');
+      }
     });
     
-    this.bot.action('save_tags', async (ctx) => {
-      await this.handleSaveSelection(ctx, 'tags');
-    });
-    
-    // Cancel selection
+    // Cancel category selection
     this.bot.action('cancel_categories', async (ctx) => {
-      await ctx.deleteMessage();
-      await ctx.answerCbQuery('Category selection cancelled');
+      try {
+        // Clean up session
+        if (ctx.session) {
+          delete ctx.session.selectedCategories;
+        }
+        
+        await ctx.deleteMessage();
+        await ctx.answerCbQuery('Category selection cancelled');
+      } catch (error) {
+        logger.error('Error cancelling category selection:', error);
+      }
     });
     
+    // Toggle tag selection (placeholder for now)
+    this.bot.action(/^toggle_tag_(\d+)$/, async (ctx) => {
+      await ctx.answerCbQuery('Tag selection coming soon');
+    });
+    
+    // Save tags (placeholder for now)
+    this.bot.action('save_tags', async (ctx) => {
+      await ctx.answerCbQuery('Tag management coming soon');
+    });
+    
+    // Cancel tags (placeholder for now)
     this.bot.action('cancel_tags', async (ctx) => {
+      if (ctx.session) {
+        delete ctx.session.selectedTags;
+      }
       await ctx.deleteMessage();
       await ctx.answerCbQuery('Tag selection cancelled');
     });
@@ -506,55 +564,75 @@ class BotService {
    * Show a selection menu for categories or tags
    */
   async showSelectionMenu(ctx, type, items) {
-    const chatId = String(ctx.chat.id);
-    const prefs = preferences.getPreferences(chatId);
-    
-    // Update session with current preferences
-    if (Array.isArray(prefs[type])) {
-      ctx.session[`selected${this.capitalize(type)}`] = [...prefs[type]];
-    } else {
-      ctx.session[`selected${this.capitalize(type)}`] = [];
-    }
-    
-    // Create keyboard with items
-    const keyboard = [];
-    const chunkSize = 2;
-    
-    for (let i = 0; i < items.length; i += chunkSize) {
-      const row = items
-        .slice(i, i + chunkSize)
-        .map(item => {
-          const isSelected = ctx.session[`selected${this.capitalize(type)}`].includes(item.id);
-          return Markup.button.callback(
-            `${isSelected ? '✅' : '◻️'} ${item.name} (${item.count})`,
-            `toggle_${type}_${item.id}`
-          );
+    try {
+      const chatId = String(ctx.chat?.id || ctx.from?.id);
+      const prefs = preferences.getPreferences(chatId);
+      
+      // Ensure session is properly initialized
+      if (!ctx.session) {
+        ctx.session = {};
+      }
+      
+      // Initialize selected items array if not exists
+      if (!ctx.session[`selected${this.capitalize(type)}`]) {
+        ctx.session[`selected${this.capitalize(type)}`] = [];
+      }
+      
+      // Update session with current preferences if needed
+      if (Array.isArray(prefs[type])) {
+        ctx.session[`selected${this.capitalize(type)}`] = [...prefs[type]];
+      }
+      
+      // Create keyboard with items
+      const keyboard = [];
+      const chunkSize = 2;
+      
+      // Add category/tag selection buttons
+      for (let i = 0; i < items.length; i += chunkSize) {
+        const row = items
+          .slice(i, i + chunkSize)
+          .map(item => {
+            const isSelected = ctx.session[`selected${this.capitalize(type)}`].includes(item.id);
+            const buttonText = `${isSelected ? '✅' : '◻️'} ${item.name} (${item.count})`;
+            return Markup.button.callback(buttonText, `toggle_${type}_${item.id}`);
+          });
+        keyboard.push(row);
+      }
+      
+      // Add action buttons
+      keyboard.push([
+        Markup.button.callback('💾 Save', `save_${type}`),
+        Markup.button.callback('❌ Cancel', `cancel_${type}`)
+      ]);
+      
+      // Send or update the message
+      const messageText = `Select ${type} to follow:\nClick the checkboxes to select/deselect.`;
+      
+      if (ctx.callbackQuery) {
+        // Edit existing message
+        await ctx.editMessageText(messageText, {
+          reply_markup: {
+            inline_keyboard: keyboard
+          },
+          parse_mode: 'HTML'
         });
-      keyboard.push(row);
-    }
-    
-    // Add action buttons
-    keyboard.push([
-      Markup.button.callback('💾 Save', `save_${type}`),
-      Markup.button.callback('❌ Cancel', `cancel_${type}`)
-    ]);
-    
-    await ctx.reply(
-      `Select ${type} to include (${ctx.session[`selected${this.capitalize(type)}`].length} selected):`,
-      Markup.inlineKeyboard(keyboard)
-    );
-  }
-
-  /**
-   * Handle toggle selection of categories/tags
-   */
-  async handleToggleSelection(ctx, type) {
-    const id = parseInt(ctx.match[1], 10);
-    const sessionKey = `selected${this.capitalize(type)}`;
-    
-    // Initialize session array if it doesn't exist
-    if (!Array.isArray(ctx.session[sessionKey])) {
-      ctx.session[sessionKey] = [];
+      } else {
+        // Send new message
+        await ctx.reply(messageText, {
+          reply_markup: {
+            inline_keyboard: keyboard
+          },
+          parse_mode: 'HTML'
+        });
+      }
+      
+      // Acknowledge the callback query if this was triggered by a button press
+      if (ctx.callbackQuery) {
+        await ctx.answerCbQuery();
+      }
+      
+    } catch (error) {
+      logger.error(`Error in showSelectionMenu (${type}):`, error);
     }
     
     // Toggle selection
