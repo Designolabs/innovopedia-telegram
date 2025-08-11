@@ -4,6 +4,12 @@ const preferences = require('./preferences');
 const wordpress = require('./wordpress');
 const logger = require('../utils/logger');
 
+// Helper function to escape markdown special characters
+function escapeMarkdown(text) {
+  if (!text) return '';
+  return text.replace(/[_*[\]()~`>#+\-={}|.!\\]/g, '\\$&');
+}
+
 class BotService {
   constructor() {
     this.bot = new Telegraf(config.telegram.token);
@@ -687,12 +693,13 @@ class BotService {
       
       categories.forEach(cat => {
         const isSelected = prefs.categories.includes(cat.id);
-        message += `${isSelected ? '✅' : '◻️'} *${cat.name}* (${cat.count} posts)\n`;
+        const escapedName = escapeMarkdown(cat.name);
+        message += `${isSelected ? '✅' : '◻️'} *${escapedName}* (${cat.count} posts)\n`;
       });
       
       message += '\nTo change categories, use /set_categories';
       
-      await ctx.replyWithMarkdown(message);
+      await ctx.replyWithMarkdownV2(message);
     } catch (error) {
       logger.error('Error fetching categories:', error);
       await ctx.reply('❌ Failed to fetch categories. Please try again later.');
