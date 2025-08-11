@@ -888,19 +888,26 @@ async handleStart(ctx) {
     }
     
     // Update the message with new selection
-    await ctx.editMessageReplyMarkup({
-      inline_keyboard: ctx.callbackQuery.message.reply_markup.inline_keyboard
-        .map(row => row.map(button => {
-          if (button.callback_data === `toggle_${type}_${id}`) {
-            const isSelected = ctx.session[sessionKey].includes(id);
-            return {
-              ...button,
-              text: button.text.replace(/^[^\w]\s*/, isSelected ? '✅ ' : '◻️ ')
-            };
-          }
-          return button;
-        }))
-    });
+    const isSelected = ctx.session[sessionKey].includes(id);
+    const newText = isSelected ? 'X' : ' ';
+    
+    // Create a deep copy of the keyboard to avoid modifying the original
+    const updatedKeyboard = JSON.parse(JSON.stringify(
+      ctx.callbackQuery.message.reply_markup.inline_keyboard
+    ));
+    
+    // Find and update the button
+    for (const row of updatedKeyboard) {
+      for (const button of row) {
+        if (button.callback_data === `toggle_${type}_${id}`) {
+          // Update the button text
+          button.text = button.text.replace(/^\[.\]/s, `[${newText}]`);
+          break;
+        }
+      }
+    }
+    
+    await ctx.editMessageReplyMarkup({ inline_keyboard: updatedKeyboard });
     
     // Acknowledge the button press
     await ctx.answerCbQuery();
