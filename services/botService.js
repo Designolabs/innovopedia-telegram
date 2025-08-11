@@ -12,7 +12,18 @@ function escapeMarkdown(text) {
 
 class BotService {
   constructor() {
-    this.bot = new Telegraf(config.telegram.token);
+    this.bot = new Telegraf(config.telegram.token, {
+      telegram: { webhookReply: false }
+    });
+    
+    // Initialize session middleware
+    this.bot.use((ctx, next) => {
+      if (!ctx.session) {
+        ctx.session = {};
+      }
+      return next();
+    });
+    
     this.setupErrorHandling();
   }
 
@@ -472,8 +483,20 @@ class BotService {
     const chatId = String(ctx.chat.id);
     const prefs = preferences.getPreferences(chatId);
     
-    // Store current selection in session
-    ctx.session[`selected${this.capitalize(type)}`] = [...prefs[type]];
+    // Initialize session if not exists
+    if (!ctx.session) {
+      ctx.session = {};
+    }
+    
+    // Initialize selected items array if not exists
+    if (!ctx.session[`selected${this.capitalize(type)}`]) {
+      ctx.session[`selected${this.capitalize(type)}`] = [];
+    }
+    
+    // Update session with current preferences
+    if (Array.isArray(prefs[type])) {
+      ctx.session[`selected${this.capitalize(type)}`] = [...prefs[type]];
+    }
     
     // Create keyboard with items
     const keyboard = [];
