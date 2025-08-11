@@ -21,7 +21,7 @@ A Telegram Mini App for Innovopedia that displays innovative ideas and technolog
 1. Clone the repository
 
 ```bash
-git clone https://github.com/yourusername/innovopedia-telegram.git
+git clone https://github.com/Designolabs/innovopedia-telegram.git
 cd innovopedia-telegram
 ```
 
