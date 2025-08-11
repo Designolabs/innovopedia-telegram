@@ -689,16 +689,22 @@ class BotService {
       const categories = await wordpress.getCategories();
       const prefs = preferences.getPreferences(String(ctx.chat.id));
       
-      let message = '📚 *Available Categories*\n\n';
+      // Build the message parts
+      const messageParts = [];
+      messageParts.push('📚 *Available Categories*\n\n');
       
       categories.forEach(cat => {
         const isSelected = prefs.categories.includes(cat.id);
         const escapedName = escapeMarkdown(cat.name);
-        message += `${isSelected ? '✅' : '◻️'} *${escapedName}* (${cat.count} posts)\n`;
+        // Escape the entire line including the count
+        const line = `${isSelected ? '✅' : '◻️'} *${escapedName}* \(${cat.count} posts\)`;
+        messageParts.push(line);
       });
       
-      message += '\nTo change categories, use /set_categories';
+      messageParts.push('\nTo change categories, use /set_categories');
       
+      // Join all parts with newlines and send
+      const message = messageParts.join('\n');
       await ctx.replyWithMarkdownV2(message);
     } catch (error) {
       logger.error('Error fetching categories:', error);
