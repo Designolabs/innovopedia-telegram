@@ -19,6 +19,31 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// API endpoint to get posts
+app.get('/posts', async (req, res) => {
+  try {
+    const wordpress = require('./services/wordpress');
+    const posts = await wordpress.getRecentPosts();
+    
+    // Format posts for the frontend
+    const formattedPosts = posts.map(post => ({
+      id: post.id,
+      title: post.title.rendered,
+      excerpt: post.excerpt.rendered.replace(/<[^>]*>?/gm, ''), // Remove HTML tags
+      content: post.content.rendered,
+      url: post.link,
+      date: post.date,
+      image: post.jetpack_featured_media_url || 'https://via.placeholder.com/800x400?text=No+Image',
+      categories: post.categories
+    }));
+    
+    res.json(formattedPosts);
+  } catch (error) {
+    console.error('Error fetching posts:', error);
+    res.status(500).json({ error: 'Failed to fetch posts' });
+  }
+});
+
 // Start server
 const server = app.listen(config.server.port, () => {
   logger.info(`Server running on port ${config.server.port}`);

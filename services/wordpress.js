@@ -169,6 +169,32 @@ class WordPressService {
     if (!Array.isArray(posts)) return [];
     return posts.map(post => this._formatPost(post));
   }
+
+  /**
+   * Get recent posts with default settings
+   * @param {number} [count=10] - Number of recent posts to fetch
+   * @returns {Promise<Array>} - Array of formatted posts
+   */
+  async getRecentPosts(count = 10) {
+    try {
+      const posts = await this.getPosts({ perPage: count });
+      
+      // Format posts for the frontend
+      return posts.map(post => ({
+        id: post.id,
+        title: post.title.rendered,
+        excerpt: post.excerpt.rendered,
+        content: post.content?.rendered || '',
+        link: post.link,
+        date: post.date,
+        jetpack_featured_media_url: post.jetpack_featured_media_url || '',
+        categories: post.categories || []
+      }));
+    } catch (error) {
+      logger.error('Error in getRecentPosts:', error);
+      throw error;
+    }
+  }
 }
 
 module.exports = new WordPressService();
