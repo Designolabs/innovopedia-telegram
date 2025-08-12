@@ -4,7 +4,6 @@ const preferences = require('./preferences');
 const wordpress = require('./wordpress');
 const logger = require('../utils/logger');
 const { LocalSession } = require('telegraf-session-local');
-const SchedulerService = require('./schedulerService');
 const metricsService = require('./metricsService');
 const moment = require('moment-timezone');
 const { RateLimiterMemory } = require('rate-limiter-flexible');
@@ -18,7 +17,7 @@ const rateLimiter = new RateLimiterMemory({
 // Helper function to escape markdown special characters
 function escapeMarkdown(text) {
   if (!text) return '';
-  return text.replace(/[_*[\]()~`>#+\-={}|.!\\]/g, '\\$&');
+  return text.replace(/[_*\[\]()~`>#+\-={}|.!\\]/g, '\\$&');
 }
 
 class BotService {
@@ -32,14 +31,10 @@ class BotService {
       }
       
       logger.debug('Creating Telegraf instance...');
-      // Initialize bot first
+      // Initialize bot
       this.bot = new Telegraf(config.telegram.token, {
         telegram: { webhookReply: false }
       });
-      
-      logger.debug('Creating SchedulerService...');
-      // Now initialize scheduler with the bot instance
-      this.scheduler = new SchedulerService(this.bot);
       
       logger.debug('Initializing session middleware...');
       // Initialize session middleware
@@ -109,79 +104,152 @@ class BotService {
    * Initialize the bot with all commands and handlers
    */
   initialize() {
-    this.setupCommands();
-    this.setupActionHandlers();
-    this.setupErrorHandling();
-    
-    // Log bot start with explicit polling
-    logger.info('Starting bot with polling...');
-    
-    // Configure bot launch options
-    const launchOptions = {
-      dropPendingUpdates: true, // Skip old updates
-      allowedUpdates: ['message', 'callback_query'] // Only listen to these update types
-    };
-    
-    // Start the bot with explicit polling
-    this.bot.launch(launchOptions)
-      .then(() => {
-        logger.info('Bot started successfully with the following configuration:');
-        logger.info(`- Bot Username: @${this.bot.botInfo?.username || 'unknown'}`);
-        logger.info(`- Webhook: ${this.bot.telegram.webhookReply ? 'Enabled' : 'Disabled'}`);
-        logger.info(`- Polling: ${!this.bot.telegram.webhookReply ? 'Enabled' : 'Disabled'}`);
+    try {
+      logger.info('Initializing bot commands...');
+      this.setupCommands();
+      
+      logger.info('Setting up action handlers...');
+      this.setupActionHandlers();
+      
+      logger.info('Setting up error handling...');
+      this.setupErrorHandling();
+      
+      // Log bot start with explicit polling
+      logger.info('Starting bot with polling...');
+      logger.info('Bot token exists:', !!config.telegram.token);
+      logger.info('Bot token starts with:', config.telegram.token ? `${config.telegram.token.substring(0, 5)}...` : 'No token');
+      
+      // Log all available commands
+      const commands = [
+        { command: 'start', description: 'Start the bot' },
+        { command: 'help', description: 'Show help information' },
+        { command: 'categories', description: 'List all categories' },
+        { command: 'tags', description: 'List all tags' },
+        { command: 'preferences', description: 'View your preferences' },
+        { command: 'post_latest', description: 'Get the latest post' },
+        { command: 'search', description: 'Search for posts' },
+        { command: 'stats', description: 'View bot statistics' }
+      ];
+      
+      // Set bot commands
+      this.bot.telegram.setMyCommands(commands)
+        .then(() => logger.info('Bot commands registered successfully'))
+        .catch(err => logger.error('Failed to register bot commands:', err));
         
-        // Start auto-posting for active chats
-        this.startAutoPostingForActiveChats();
-        
-        // Log success
-        logger.info('Bot is now running and ready to receive commands');
-      })
-      .catch(error => {
-        logger.error('Failed to start bot:', error);
-        logger.error('Error details:', {
-          message: error.message,
-          stack: error.stack,
-          code: error.code
+      logger.info('Bot initialization complete, starting...');
+    
+      // Configure bot launch options
+      const launchOptions = {
+        dropPendingUpdates: true, // Skip old updates
+        allowedUpdates: ['message', 'callback_query'] // Only listen to these update types
+      };
+      
+      // Start the bot with explicit polling
+      this.bot.launch(launchOptions)
+        .then(() => {
+          logger.info('Bot started successfully with the following configuration:');
+          logger.info(`- Bot Username: @${this.bot.botInfo?.username || 'unknown'}`);
+          logger.info(`- Webhook: ${this.bot.telegram.webhookReply ? 'Enabled' : 'Disabled'}`);
+          logger.info(`- Polling: ${!this.bot.telegram.webhookReply ? 'Enabled' : 'Disabled'}`);
+          
+          // Start auto-posting for active chats
+          this.startAutoPostingForActiveChats();
+          
+          // Log success
+          logger.info('Bot is now running and ready to receive commands');
+        })
+        .catch(error => {
+          logger.error('Failed to start bot:', error);
+          logger.error('Error details:', {
+            message: error.message,
+            stack: error.stack,
+            code: error.code
+          });
+          process.exit(1);
         });
-        process.exit(1);
+    } catch (error) {
+      logger.error('Error initializing bot:', {
+        message: error.message,
+        stack: error.stack,
+        name: error.name
       });
+      process.exit(1);
+    }
   }
 
   /**
-   * Setup bot commands
+   * Setup bot commands with error handling and logging
    */
   setupCommands() {
-    // Basic commands
-    this.bot.command('start', (ctx) => this.handleStart(ctx));
-    this.bot.command('help', (ctx) => this.handleHelp(ctx));
-    
-    // Category commands
-    this.bot.command('categories', (ctx) => this.handleListCategories(ctx));
-    this.bot.command('set_categories', (ctx) => this.handleSetCategories(ctx));
-    
-    // Tag commands
-    this.bot.command('tags', (ctx) => this.handleListTags(ctx));
-    this.bot.command('set_tags', (ctx) => this.handleSetTags(ctx));
-    
-    // Post commands
-    this.bot.command('post_latest', (ctx) => this.handlePostLatest(ctx));
-    this.bot.command('post_specific', (ctx) => this.handlePostSpecific(ctx));
-    this.bot.command('schedule_post', (ctx) => this.handleSchedulePost(ctx));
-    this.bot.command('scheduled_posts', (ctx) => this.handleListScheduledPosts(ctx));
-    
-    // Search command
-    this.bot.command('search', (ctx) => this.handleSearch(ctx));
-    
-    // Stats command
-    this.bot.command('stats', (ctx) => this.handleStats(ctx));
-    
-    // Admin commands
-    this.bot.command('admin', (ctx) => this.handleAdminCommand(ctx));
-    
-    // Info commands
-    this.bot.command('preferences', (ctx) => this.handlePreferences(ctx));
-    
-    // Auto-posting commands
+    // Add middleware to log all updates
+    this.bot.use((ctx, next) => {
+      try {
+        logger.debug('Received update:', {
+          updateId: ctx.update.update_id,
+          messageId: ctx.message?.message_id,
+          chatId: ctx.chat?.id,
+          fromId: ctx.from?.id,
+          updateType: ctx.updateType,
+          messageText: ctx.message?.text,
+          callbackQuery: ctx.callbackQuery?.data
+        });
+        return next();
+      } catch (error) {
+        logger.error('Error in update middleware:', error);
+        return next();
+      }
+    });
+
+    // Helper function to wrap command handlers with error handling
+    const commandWrapper = (handler, commandName) => {
+      return async (ctx) => {
+        try {
+          logger.info(`Command received: /${commandName}`, { 
+            from: ctx.from?.id, 
+            chat: ctx.chat?.id,
+            message: ctx.message?.text 
+          });
+          await handler.call(this, ctx);
+        } catch (error) {
+          logger.error(`Error in /${commandName} command:`, {
+            error: error.message,
+            stack: error.stack,
+            update: JSON.stringify(ctx.update, null, 2)
+          });
+          
+          try {
+            await ctx.reply(`❌ An error occurred while processing your /${commandName} command. Please try again later.`);
+          } catch (e) {
+            logger.error('Failed to send error message to user:', e);
+          }
+        }
+      };
+    };
+
+    // Register all commands with error handling
+    const commands = [
+      { name: 'start', handler: this.handleStart },
+      { name: 'help', handler: this.handleHelp },
+      { name: 'categories', handler: this.handleListCategories },
+      { name: 'set_categories', handler: this.handleSetCategories },
+      { name: 'tags', handler: this.handleListTags },
+      { name: 'set_tags', handler: this.handleSetTags },
+      { name: 'post_latest', handler: this.handlePostLatest },
+      { name: 'post_specific', handler: this.handlePostSpecific },
+      { name: 'preferences', handler: this.handlePreferences },
+      { name: 'start_autopost', handler: this.handleStartAutoPost },
+      { name: 'stop_autopost', handler: this.handleStopAutoPost },
+      { name: 'search', handler: this.handleSearch },
+      { name: 'stats', handler: this.handleStats }
+    ];
+
+    // Register each command
+    commands.forEach(({ name, handler }) => {
+      this.bot.command(name, commandWrapper(handler, name));
+    });
+
+    // Log all registered commands
+    logger.info('Registered commands:', commands.map(cmd => `/${cmd.name}`).join(', '));
     this.bot.command('start_autopost', (ctx) => this.handleStartAutoPost(ctx));
     this.bot.command('stop_autopost', (ctx) => this.handleStopAutoPost(ctx));
     
@@ -562,41 +630,48 @@ class BotService {
             `I can help you stay updated with the latest content from ${config.wordpress.siteName}.\n\n` +
             `Use /help to see available commands.`;
             
-          // Add admin commands if user is admin
-          const adminMessage = isAdminUser ? 
-            `\n\n📋 *Admin Commands*:\n` +
-            `/start_autopost - Start auto-posting new content\n` +
-            `/stop_autopost - Stop auto-posting\n` +
-            `/stats - View bot statistics\n` +
-            `/schedule_post - Schedule a post\n` +
-            `/scheduled_posts - List scheduled posts` : '';
-            
-          logger.debug(`Sending welcome message to user ${ctx.from.id}`);
-          await ctx.replyWithMarkdown(welcomeMessage + adminMessage, {
-            reply_markup: {
-              remove_keyboard: true
-            }
-          });
-          logger.debug(`Welcome message sent to user ${ctx.from.id}`);
-        })
-        .catch(async (error) => {
-          // Rate limit exceeded
-          logger.warn(`Rate limit exceeded for user ${ctx.from.id}: ${error.message}`);
-          await ctx.reply('⚠️ Too many requests. Please try again later.');
         });
+        
+        logger.info('Sent welcome message', { 
+          userId: ctx.from.id, 
+          chatId: ctx.chat.id 
+        });
+        
+      } catch (sendError) {
+        logger.error('Failed to send welcome message:', {
+          error: sendError.message,
+          stack: sendError.stack,
+          userId: ctx.from?.id
+        });
+        
+        // Fallback to simple message if rich message fails
+        try {
+          await ctx.reply(
+            '👋 Welcome to Innovopedia Bot! ' +
+            'Use /help to see available commands.'
+          );
+        } catch (fallbackError) {
+          logger.error('Failed to send fallback welcome message:', fallbackError);
+        }
+      }
+      
     } catch (error) {
-      logger.error(`Error in handleStart for user ${ctx.from.id}:`, {
+      logger.error('Error in handleStart:', {
         error: error.message,
         stack: error.stack,
-        updateType: ctx.updateType,
-        updateId: ctx.update.update_id
+        userId: ctx.from?.id,
+        chatId: ctx.chat?.id,
+        update: JSON.stringify(ctx.update, null, 2)
       });
       
-      // Try to send an error message to the user
       try {
-        await ctx.reply('❌ An error occurred while processing your request. Please try again later.');
+        await ctx.reply(
+          '❌ An error occurred while processing your request. ' +
+          'The issue has been logged and will be investigated.\n\n' +
+          'Please try again later or contact support if the problem persists.'
+        );
       } catch (e) {
-        logger.error('Failed to send error message to user:', e);
+        logger.error('Failed to send error message:', e);
       }
     }
   }
