@@ -24,15 +24,38 @@ const server = app.listen(config.server.port, () => {
   logger.info(`Server running on port ${config.server.port}`);
   
   try {
+    // Log configuration for debugging
+    logger.info('Bot configuration:', {
+      telegram: {
+        hasToken: !!config.telegram.token,
+        adminUsers: config.telegram.adminUsers || [],
+        webAppUrl: config.telegram.webAppUrl || 'Not set'
+      },
+      wordpress: {
+        apiUrl: config.wordpress.apiUrl || 'Not set',
+        hasAuth: !!config.wordpress.auth
+      },
+      server: {
+        port: config.server.port,
+        nodeEnv: config.server.nodeEnv
+      }
+    });
+    
     // Initialize and start the bot service
+    logger.info('Initializing bot service...');
     botService.initialize();
-    logger.info('Bot service initialized');
+    logger.info('Bot service initialization completed');
     
     if (config.telegram.webAppUrl) {
       logger.info(`Web App URL: ${config.telegram.webAppUrl}`);
     }
   } catch (error) {
-    logger.error('Failed to initialize bot service:', error);
+    logger.error('Failed to initialize bot service:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name,
+      code: error.code
+    });
     process.exit(1);
   }
 });

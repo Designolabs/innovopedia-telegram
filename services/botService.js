@@ -3,7 +3,7 @@ const config = require('../config');
 const preferences = require('./preferences');
 const wordpress = require('./wordpress');
 const logger = require('../utils/logger');
-const { Telegraf: TelegrafSession } = require('telegraf-session-local');
+const { LocalSession } = require('telegraf-session-local');
 const SchedulerService = require('./schedulerService');
 const metricsService = require('./metricsService');
 const moment = require('moment-timezone');
@@ -23,48 +23,86 @@ function escapeMarkdown(text) {
 
 class BotService {
   constructor() {
-    // Initialize bot first
-    this.bot = new Telegraf(config.telegram.token, {
-      telegram: { webhookReply: false }
-    });
-    
-    // Now initialize scheduler with the bot instance
-    this.scheduler = new SchedulerService(this.bot);
-    
-    // Initialize session middleware
-    const session = new TelegrafSession({
-      // Database name/path to load on start
-      database: 'sessions.json',
-      // Type of storage to use
-      storage: TelegrafSession.storageFileAsync,
-      // Format of storage/database (default: JSON.stringify / JSON.parse)
-      format: {
-        serialize: (obj) => JSON.stringify(obj, null, 2),
-        deserialize: (str) => JSON.parse(str),
-      },
-      // Update session on every message
-      getSessionKey: (ctx) => {
-        if (ctx.from && ctx.chat) {
-          return `${ctx.from.id}:${ctx.chat.id}`;
-        }
-        return null;
-      },
-    });
-    
-    this.bot.use(session.middleware());
-    
-    // Initialize default session values
-    this.bot.use((ctx, next) => {
-      if (!ctx.session) {
-        ctx.session = {
-          selectedCategories: [],
-          selectedTags: []
-        };
+    try {
+      logger.info('Initializing BotService...');
+      
+      // Validate config
+      if (!config.telegram || !config.telegram.token) {
+        throw new Error('Missing Telegram bot token in config');
       }
-      return next();
-    });
-    
-    this.setupErrorHandling();
+      
+      logger.debug('Creating Telegraf instance...');
+      // Initialize bot first
+      this.bot = new Telegraf(config.telegram.token, {
+        telegram: { webhookReply: false }
+      });
+      
+      logger.debug('Creating SchedulerService...');
+      // Now initialize scheduler with the bot instance
+      this.scheduler = new SchedulerService(this.bot);
+      
+      logger.debug('Initializing session middleware...');
+      // Initialize session middleware
+      this.session = new LocalSession({
+        // Database name/path to load on start
+        database: 'sessions.json',
+        // Type of storage to use (using default storage)
+        // Format of storage/database (default: JSON.stringify / JSON.parse)
+        format: {
+          serialize: (obj) => {
+            try {
+              return JSON.stringify(obj, null, 2);
+            } catch (e) {
+              logger.error('Error serializing session:', e);
+              return '{}';
+            }
+          },
+          deserialize: (str) => {
+            try {
+              return str ? JSON.parse(str) : {};
+            } catch (e) {
+              logger.error('Error deserializing session:', e);
+              return {};
+            }
+          }
+        },
+        // Update session on every message
+        getSessionKey: (ctx) => {
+          try {
+            if (ctx && ctx.from && ctx.chat) {
+              return `${ctx.from.id}:${ctx.chat.id}`;
+            }
+          } catch (e) {
+            logger.error('Error generating session key:', e);
+          }
+          return null;
+        }
+      });
+      
+      // Apply session middleware
+      this.bot.use(this.session.middleware());
+      
+      // Initialize default session values
+      this.bot.use((ctx, next) => {
+        if (!ctx.session) {
+          ctx.session = {
+            selectedCategories: [],
+            selectedTags: []
+          };
+        }
+        return next();
+      });
+      
+      this.setupErrorHandling();
+      
+    } catch (error) {
+      logger.error('Error in BotService constructor:', {
+        message: error.message,
+        stack: error.stack,
+        name: error.name
+      });
+      throw error; // Re-throw to be caught by the caller
+    }
   }
 
   /**
